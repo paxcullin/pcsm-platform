@@ -1,0 +1,138 @@
+default_environment: &default_environment
+    docker:
+      - image: node:latest
+    
+version: 2
+jobs:
+  test:
+    <<: *default_environment
+    steps:
+      - checkout
+      - restore_cache:
+          key: dependency-cache-{{ .Branch }}-{{ checksum "package.json" }}
+      - run:
+          name: npm-install
+          command: 'npm install'
+      - save_cache:
+          key: dependency-cache-{{ .Branch }}-{{ checksum "package.json" }}
+          paths:
+          - ./node_modules
+      - run: npm run test:ci
+
+  # This step generates an unique service version to be passed, as environment variable, to serverless.
+  # The generated version uses the major and minor version numbers from the package.json file and appends
+  # a timestamp and the build number:
+  # i.e: 1.0.171010.21
+  generate_service_version:
+    <<: *default_environment
+    steps:
+      - checkout
+      - run: mkdir -p workspace
+      - run: echo `node ./src/lib/tools/generate-service-version.js $CIRCLE_BUILD_NUM` > workspace/SERVICE_VERSION
+      - persist_to_workspace:
+          root: workspace
+          paths:
+            - SERVICE_VERSION
+  
+  deploy_dev:
+    <<: *default_environment
+    steps:
+      - checkout
+      - restore_cache:
+          key: dependency-cache-{{ .Branch }}-{{ checksum "package.json" }}
+      - attach_workspace:
+          at: workspace
+      - run: echo `cat workspace/SERVICE_VERSION`
+      - run: echo 'export SERVICE_VERSION=`cat workspace/SERVICE_VERSION`' >> $BASH_ENV
+      - run: echo $SERVICE_VERSION
+      - run: export STAGE=dev && 
+             export REGION=$AWS_REGION && 
+             npm run deploy
+
+  deploy_qa:
+    <<: *default_environment
+    steps:
+      - checkout
+      - restore_cache:
+          key: dependency-cache-{{ .Branch }}-{{ checksum "package.json" }}
+      - attach_workspace:
+          at: workspace
+      - run: echo `cat workspace/SERVICE_VERSION`
+      - run: echo 'export SERVICE_VERSION=`cat workspace/SERVICE_VERSION`' >> $BASH_ENV
+      - run: echo $SERVICE_VERSION
+      - run: export STAGE=qa && 
+             export REGION=$AWS_REGION && 
+             npm run deploy
+
+  deploy_int:
+    <<: *default_environment
+    steps:
+      - checkout
+      - restore_cache:
+          key: dependency-cache-{{ .Branch }}-{{ checksum "package.json" }}
+      - attach_workspace:
+          at: workspace
+      - run: echo `cat workspace/SERVICE_VERSION`
+      - run: echo 'export SERVICE_VERSION=`cat workspace/SERVICE_VERSION`' >> $BASH_ENV
+      - run: echo $SERVICE_VERSION
+      - run: export STAGE=int && 
+             export REGION=$AWS_REGION && 
+             npm run deploy
+      - save_cache:
+          key: serverless-build-{{ .Branch }}-{{ checksum "serverless.yml" }}
+          paths:
+          - ./.serverless
+
+  release_me:
+    <<: *default_environment 
+    steps:
+      - checkout
+      - restore_cache:
+          key: dependency-cache-{{ .Branch }}-{{ checksum "package.json" }}
+      - restore_cache:
+          key: serverless-build-{{ .Branch }}-{{ checksum "serverless.yml" }}
+      - add_ssh_keys:
+          fingerprints:
+            - "32:60:d2:5c:64:ce:ed:12:79:5b:eb:cd:5f:e2:09:0e" # Update me with GitHub r/w deploy key fingerprint
+      - run: cd .serverless && tar -zcvf ../release.tar.gz * && cd ..
+      - run: npm run release-me -- release.tar.gz $CIRCLE_SHA1 
+
+
+workflows:
+  version: 2
+  build_and_test:
+    jobs:
+      - test
+      - generate_service_version:
+          requires:
+            - test
+          filters:
+            branches:
+              only:
+                - dev
+                - /release-.*/
+                - master
+      - deploy_dev:
+          requires:
+            - generate_service_version
+          filters:
+            branches:
+              only:
+                - dev
+      - deploy_qa:
+          requires:
+            - generate_service_version
+          filters:
+            branches:
+              only:
+                - /release-.*/
+      - deploy_int:
+          requires:
+            - generate_service_version
+          filters:
+            branches:
+              only:
+                - master
+      - release_me:
+          requires:
+            - deploy_int

@@ -1,0 +1,19 @@
+# package directories
+node_modules
+
+# Serverless directories
+.serverless
+release.tar.gz
+
+# Webpack directory
+.webpack
+
+# Optional npm cache directory
+.npm
+
+# Code coverage directory
+coverage
+
+envvars.local.sh
+npm-debug*
+.vscode
